@@ -8,7 +8,8 @@ const socketIO = require('socket.io');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const nodemailer = require('nodemailer');
+const { Resend } = require('resend');
+const resend = new Resend(process.env.RESEND_API_KEY);
 const cors = require('cors');
 const path = require('path');
 
@@ -56,15 +57,23 @@ const ChatHistory = mongoose.model('ChatHistory', chatHistorySchema);
 // ============================================
 // EMAIL SETUP
 // ============================================
-const transporter = nodemailer.createTransport({
-  host: 'smtp-relay.brevo.com',
-  port: 587,
-  secure: false,
-  auth: {
-    user: process.env.EMAIL_USER,
-    pass: process.env.EMAIL_PASS
-  }
-});
+async function sendOTPEmail(email, name, otp) {
+  await resend.emails.send({
+    from: 'onboarding@resend.dev',
+    to: email,
+    subject: '🔐 Your RandomChat OTP Code',
+    html: `
+      <div style="font-family:Arial,sans-serif;max-width:420px;margin:auto;padding:30px;background:#13131a;color:#f0eeff;border-radius:16px;">
+        <h2 style="color:#7c6fff;">Hello ${name}! 👋</h2>
+        <p style="color:#8882aa;">Your OTP code:</p>
+        <div style="font-size:2.5rem;font-weight:bold;letter-spacing:12px;color:#7c6fff;text-align:center;padding:20px;background:#1c1c28;border-radius:12px;margin:20px 0;">
+          ${otp}
+        </div>
+        <p style="color:#8882aa;">Valid for 10 minutes only.</p>
+      </div>
+    `
+  });
+}
 
 function generateOTP() {
   return Math.floor(100000 + Math.random() * 900000).toString();
