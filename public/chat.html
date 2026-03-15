@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Random Chat - Live</title>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body class="chat-page">
+
+  <!-- Header -->
+  <div class="chat-header">
+    <div class="brand">RandomChat ✨</div>
+    <div style="display:flex; align-items:center; gap:16px;">
+      <div class="status-badge">
+        <div class="status-dot waiting" id="statusDot"></div>
+        <span id="statusText">Looking for someone...</span>
+      </div>
+      <a href="index.html"><button class="btn btn-outline" style="padding:8px 16px; font-size:0.85rem;">🏠 Home</button></a>
+    </div>
+  </div>
+
+  <!-- Waiting Overlay -->
+  <div class="waiting-overlay" id="waitingOverlay">
+    <div class="spinner"></div>
+    <h2>Finding someone for you... 🔍</h2>
+    <p>Please wait, connecting to a random person</p>
+    <button class="btn btn-outline" onclick="cancelSearch()" style="margin-top:10px;">Cancel</button>
+  </div>
+
+  <!-- Video Section -->
+  <div class="video-section">
+    <!-- Your Video -->
+    <div class="video-container">
+      <video id="localVideo" autoplay muted playsinline></video>
+      <div class="video-label">You 📹</div>
+    </div>
+
+    <!-- Partner's Video -->
+    <div class="video-container">
+      <div class="video-placeholder" id="remoteVideoPlaceholder">
+        <span>👤</span>
+        <p>Waiting for connection...</p>
+      </div>
+      <video id="remoteVideo" autoplay playsinline style="display:none;"></video>
+      <div class="video-label" id="partnerLabel" style="display:none;">Partner</div>
+    </div>
+  </div>
+
+  <!-- Chat Section -->
+  <div class="chat-section">
+    <div class="chat-box">
+      <div class="chat-box-header">
+        💬 Temporary Chat <span style="font-size:0.8rem;">(only visible while connected)</span>
+      </div>
+      <div class="messages" id="messages">
+        <div style="text-align:center; color:var(--text-muted); font-size:0.85rem; padding:20px;">
+          Connect with someone to start chatting!
+        </div>
+      </div>
+      <div class="chat-input-row">
+        <input type="text" id="chatInput" placeholder="Type a message..." disabled onkeydown="handleChatKey(event)"/>
+        <button class="btn btn-primary" onclick="sendMessage()" id="sendBtn" disabled style="padding:12px 20px;">
+          Send ➤
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Controls Bar -->
+  <div class="controls-bar">
+    <button class="btn btn-primary" id="nextBtn" onclick="findNext()" disabled>
+      ⏭️ Next Person
+    </button>
+    <button class="btn" id="muteBtn" onclick="toggleMute()" 
+      style="background:var(--surface2); color:var(--text); border:1px solid var(--border);">
+      🎤 Mute
+    </button>
+    <button class="btn" id="videoBtn" onclick="toggleVideo()"
+      style="background:var(--surface2); color:var(--text); border:1px solid var(--border);">
+      📹 Stop Video
+    </button>
+    <button class="btn btn-danger" onclick="endCall()">
+      📞 End Call
+    </button>
+  </div>
+
+  <!-- Socket.io + WebRTC -->
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    // ============================================
+    // CHAT PAGE - WebRTC + Socket.io
+    // ============================================
+
+    // Check login
+    const user = JSON.parse(localStorage.getItem('rcUser'));
+    const token = localStorage.getItem('rcToken');
+    if (!user || !token) {
+      alert('Please login first!');
+      window.location.href = '/index.html';
+    }
+
+    // ---- Variables ----
+    let socket = io();
+    let localStream = null;
+    let peerConnection = null;
+    let currentRoomId = null;
+    let isMuted = false;
+    let isVideoOff = false;
+    let partnerName = '';
+
+    // WebRTC Config (using Google STUN servers)
+    const rtcConfig = {
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ]
+    };
+
+    // ============================================
+    // INIT - Get camera + mic
+    // ============================================
+    async function initMedia() {
+      try {
+        localStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+        document.getElementById('localVideo').srcObject = localStream;
+        console.log('✅ Camera & Mic ready');
+
+        // Join socket and find random
+        socket.emit('user-join', {
+          userId: user.id,
+          name: user.name,
+          gender: user.gender
+        });
+
+        findRandom();
+      } catch (err) {
+        console.error('Camera error:', err);
+        alert('⚠️ Camera/Microphone permission denied! Please allow access.');
+      }
+    }
+
+    // ============================================
+    // FIND RANDOM USER
+    // ============================================
+    function findRandom() {
+      document.getElementById('waitingOverlay').style.display = 'flex';
+      document.getElementById('statusText').textContent = 'Looking for someone...';
+      document.getElementById('statusDot').className = 'status-dot waiting';
+
+      socket.emit('find-random', {
+        userId: user.id,
+        name: user.name,
+        gender: user.gender
+      });
+    }
+
+    function cancelSearch() {
+      window.location.href = '/index.html';
+    }
+
+    // ============================================
+    // SOCKET EVENTS
+    // ============================================
+
+    // Match found!
+    socket.on('match-found', async ({ roomId, partnerName: pName, isInitiator }) => {
+      console.log(`✅ Matched with ${pName} in room ${roomId}`);
+      currentRoomId = roomId;
+      partnerName = pName;
+
+      // Hide waiting overlay
+      document.getElementById('waitingOverlay').style.display = 'none';
+      document.getElementById('statusDot').className = 'status-dot online';
+      document.getElementById('statusText').textContent = `Connected with ${pName}`;
+      document.getElementById('partnerLabel').textContent = pName + ' 👤';
+      document.getElementById('partnerLabel').style.display = 'block';
+
+      // Enable controls
+      document.getElementById('nextBtn').disabled = false;
+      document.getElementById('chatInput').disabled = false;
+      document.getElementById('sendBtn').disabled = false;
+
+      // Add system message
+      addMessage(`🔗 Connected with ${pName}!`, 'system');
+
+      // Start WebRTC
+      await setupPeerConnection(isInitiator);
+    });
+
+    // Still waiting
+    socket.on('waiting', () => {
+      document.getElementById('statusText').textContent = 'Looking for someone...';
+    });
+
+    // Partner left
+    socket.on('partner-left', () => {
+      addMessage('❌ Partner disconnected. Finding next...', 'system');
+      cleanupPeer();
+      setTimeout(findRandom, 1500);
+    });
+
+    // Chat message received
+    socket.on('chat-message', ({ message, senderName }) => {
+      addMessage(message, 'received', senderName);
+    });
+
+    // WebRTC Offer from partner
+    socket.on('offer', async ({ offer }) => {
+      if (!peerConnection) await setupPeerConnection(false);
+      await peerConnection.setRemoteDescription(offer);
+      const answer = await peerConnection.createAnswer();
+      await peerConnection.setLocalDescription(answer);
+      socket.emit('answer', { answer, roomId: currentRoomId });
+    });
+
+    // WebRTC Answer
+    socket.on('answer', async ({ answer }) => {
+      await peerConnection?.setRemoteDescription(answer);
+    });
+
+    // ICE Candidate
+    socket.on('ice-candidate', async ({ candidate }) => {
+      try {
+        await peerConnection?.addIceCandidate(candidate);
+      } catch (e) {}
+    });
+
+    // ============================================
+    // WebRTC SETUP
+    // ============================================
+    async function setupPeerConnection(isInitiator) {
+      peerConnection = new RTCPeerConnection(rtcConfig);
+
+      // Add local tracks
+      localStream.getTracks().forEach(track => {
+        peerConnection.addTrack(track, localStream);
+      });
+
+      // ICE Candidates
+      peerConnection.onicecandidate = (e) => {
+        if (e.candidate) {
+          socket.emit('ice-candidate', { candidate: e.candidate, roomId: currentRoomId });
+        }
+      };
+
+      // Remote stream
+      peerConnection.ontrack = (e) => {
+        const remoteVideo = document.getElementById('remoteVideo');
+        const placeholder = document.getElementById('remoteVideoPlaceholder');
+        remoteVideo.srcObject = e.streams[0];
+        remoteVideo.style.display = 'block';
+        placeholder.style.display = 'none';
+        console.log('📹 Remote stream received');
+      };
+
+      // If initiator, create and send offer
+      if (isInitiator) {
+        const offer = await peerConnection.createOffer();
+        await peerConnection.setLocalDescription(offer);
+        socket.emit('offer', { offer, roomId: currentRoomId });
+      }
+    }
+
+    function cleanupPeer() {
+      peerConnection?.close();
+      peerConnection = null;
+      currentRoomId = null;
+
+      const remoteVideo = document.getElementById('remoteVideo');
+      remoteVideo.srcObject = null;
+      remoteVideo.style.display = 'none';
+      document.getElementById('remoteVideoPlaceholder').style.display = 'flex';
+      document.getElementById('partnerLabel').style.display = 'none';
+
+      document.getElementById('nextBtn').disabled = true;
+      document.getElementById('chatInput').disabled = true;
+      document.getElementById('sendBtn').disabled = true;
+
+      document.getElementById('statusDot').className = 'status-dot waiting';
+    }
+
+    // ============================================
+    // CHAT FUNCTIONS
+    // ============================================
+    function sendMessage() {
+      const input = document.getElementById('chatInput');
+      const msg = input.value.trim();
+      if (!msg || !currentRoomId) return;
+
+      socket.emit('chat-message', {
+        roomId: currentRoomId,
+        message: msg,
+        senderName: user.name
+      });
+
+      addMessage(msg, 'sent', 'You');
+      input.value = '';
+    }
+
+    function handleChatKey(e) {
+      if (e.key === 'Enter') sendMessage();
+    }
+
+    function addMessage(text, type, senderName = '') {
+      const container = document.getElementById('messages');
+
+      // Clear placeholder
+      const placeholder = container.querySelector('div[style]');
+      if (placeholder) placeholder.remove();
+
+      const div = document.createElement('div');
+
+      if (type === 'system') {
+        div.style.cssText = 'text-align:center; color:var(--text-muted); font-size:0.8rem; padding:6px; font-style:italic;';
+        div.textContent = text;
+      } else {
+        div.className = `message ${type}`;
+        if (senderName && type === 'received') {
+          div.innerHTML = `<div class="sender-name">${senderName}</div>${text}`;
+        } else {
+          div.textContent = text;
+        }
+      }
+
+      container.appendChild(div);
+      container.scrollTop = container.scrollHeight;
+    }
+
+    // ============================================
+    // CONTROLS
+    // ============================================
+    function findNext() {
+      cleanupPeer();
+      addMessage('⏭️ Finding next person...', 'system');
+      document.getElementById('messages').innerHTML = '';
+      socket.emit('next-user', {
+        userId: user.id,
+        name: user.name,
+        gender: user.gender
+      });
+    }
+
+    function toggleMute() {
+      isMuted = !isMuted;
+      localStream?.getAudioTracks().forEach(t => t.enabled = !isMuted);
+      document.getElementById('muteBtn').textContent = isMuted ? '🔇 Unmute' : '🎤 Mute';
+    }
+
+    function toggleVideo() {
+      isVideoOff = !isVideoOff;
+      localStream?.getVideoTracks().forEach(t => t.enabled = !isVideoOff);
+      document.getElementById('videoBtn').textContent = isVideoOff ? '📷 Start Video' : '📹 Stop Video';
+    }
+
+    function endCall() {
+      if (confirm('Are you sure you want to end the call?')) {
+        socket.disconnect();
+        localStream?.getTracks().forEach(t => t.stop());
+        window.location.href = '/index.html';
+      }
+    }
+
+    // ============================================
+    // START
+    // ============================================
+    initMedia();
+  </script>
+</body>
+</html>

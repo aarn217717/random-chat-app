@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Chat History - RandomChat</title>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+
+  <nav class="navbar">
+    <div class="brand">RandomChat ✨</div>
+    <div class="nav-links">
+      <a href="index.html">🏠 Home</a>
+      <a href="chat.html">🎲 Find Random</a>
+    </div>
+  </nav>
+
+  <div class="history-page">
+    <h1>Chat History 📜</h1>
+    <p class="subtitle">People you've connected with before</p>
+
+    <div id="historyList" class="history-list">
+      <div style="text-align:center; color:var(--text-muted); padding:40px;">
+        Loading history...
+      </div>
+    </div>
+  </div>
+
+  <!-- Chat Modal -->
+  <div id="chatModal" class="chat-modal" style="display:none;">
+    <div class="chat-modal-box">
+      <div class="chat-modal-header">
+        <h3 id="modalPartnerName">Chat</h3>
+        <button class="btn btn-outline" onclick="closeModal()" style="padding:6px 14px;">✕ Close</button>
+      </div>
+      <div class="chat-modal-messages" id="modalMessages"></div>
+      <div class="chat-modal-input">
+        <input type="text" id="modalInput" placeholder="Type a message..." onkeydown="handleModalKey(event)"/>
+        <button class="btn btn-primary" onclick="sendModalMessage()" style="padding:12px 18px;">Send ➤</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const user = JSON.parse(localStorage.getItem('rcUser'));
+    if (!user) {
+      alert('Please login first!');
+      window.location.href = '/index.html';
+    }
+
+    let currentChatId = null;
+
+    // Load history on page load
+    async function loadHistory() {
+      try {
+        const res = await fetch(`/api/history/${user.id}`);
+        const histories = await res.json();
+        renderHistory(histories);
+      } catch (err) {
+        document.getElementById('historyList').innerHTML =
+          '<div style="text-align:center; color:var(--text-muted); padding:40px;">Error loading history.</div>';
+      }
+    }
+
+    function renderHistory(histories) {
+      const list = document.getElementById('historyList');
+
+      if (!histories || histories.length === 0) {
+        list.innerHTML = `
+          <div style="text-align:center; padding:60px 20px;">
+            <div style="font-size:3rem; margin-bottom:16px;">💬</div>
+            <h3>No chats yet!</h3>
+            <p style="color:var(--text-muted); margin:12px 0 24px;">Start chatting with random people to build your history.</p>
+            <a href="chat.html"><button class="btn btn-primary">🎲 Find Random</button></a>
+          </div>
+        `;
+        return;
+      }
+
+      list.innerHTML = '';
+      histories.forEach(chat => {
+        // Figure out who's the partner
+        const isUser1 = chat.user1?._id === user.id;
+        const partner = isUser1 ? chat.user2 : chat.user1;
+        const partnerName = partner?.name || 'Unknown User';
+        const lastMsg = chat.messages?.length > 0
+          ? chat.messages[chat.messages.length - 1].text
+          : 'No messages yet';
+        const lastDate = new Date(chat.lastChat).toLocaleDateString('en-IN', {
+          day: 'numeric', month: 'short', year: 'numeric'
+        });
+
+        const item = document.createElement('div');
+        item.className = 'history-item';
+        item.innerHTML = `
+          <div class="user-info">
+            <h3>👤 ${partnerName}</h3>
+            <p>Last message: "${lastMsg.substring(0, 50)}${lastMsg.length > 50 ? '...' : ''}"</p>
+            <p style="margin-top:4px; font-size:0.8rem;">📅 ${lastDate}</p>
+          </div>
+          <button class="btn btn-primary" style="padding:10px 20px; font-size:0.85rem;">
+            Open Chat →
+          </button>
+        `;
+        item.onclick = () => openChat(chat._id, partnerName);
+        list.appendChild(item);
+      });
+    }
+
+    // Open a chat
+    async function openChat(chatId, partnerName) {
+      currentChatId = chatId;
+      document.getElementById('modalPartnerName').textContent = '💬 ' + partnerName;
+      document.getElementById('chatModal').style.display = 'flex';
+
+      try {
+        const res = await fetch(`/api/chat/${chatId}`);
+        const chatData = await res.json();
+        renderModalMessages(chatData);
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    function renderModalMessages(chatData) {
+      const container = document.getElementById('modalMessages');
+      container.innerHTML = '';
+
+      if (!chatData.messages || chatData.messages.length === 0) {
+        container.innerHTML = '<div style="text-align:center; color:var(--text-muted); padding:30px;">No messages yet. Say hello!</div>';
+        return;
+      }
+
+      chatData.messages.forEach(msg => {
+        const isMe = msg.sender === user.id || msg.sender?._id === user.id;
+        const div = document.createElement('div');
+        div.className = `message ${isMe ? 'sent' : 'received'}`;
+        div.textContent = msg.text;
+        container.appendChild(div);
+      });
+
+      container.scrollTop = container.scrollHeight;
+    }
+
+    async function sendModalMessage() {
+      const input = document.getElementById('modalInput');
+      const text = input.value.trim();
+      if (!text || !currentChatId) return;
+
+      try {
+        await fetch(`/api/chat/${currentChatId}/message`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ senderId: user.id, text })
+        });
+
+        // Add message to UI
+        const container = document.getElementById('modalMessages');
+        const div = document.createElement('div');
+        div.className = 'message sent';
+        div.textContent = text;
+        container.appendChild(div);
+        container.scrollTop = container.scrollHeight;
+        input.value = '';
+      } catch (err) {
+        console.error(err);
+      }
+    }
+
+    function handleModalKey(e) {
+      if (e.key === 'Enter') sendModalMessage();
+    }
+
+    function closeModal() {
+      document.getElementById('chatModal').style.display = 'none';
+      currentChatId = null;
+      loadHistory(); // Refresh history
+    }
+
+    loadHistory();
+  </script>
+</body>
+</html>
