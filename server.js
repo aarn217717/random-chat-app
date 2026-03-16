@@ -1,5 +1,5 @@
 // ============================================
-// server.js - Main Backend Server (OTP System)
+// server.js - Main Backend Server (Gmail OTP)
 // ============================================
 require('dotenv').config();
 const express = require('express');
@@ -8,8 +8,7 @@ const socketIO = require('socket.io');
 const mongoose = require('mongoose');
 const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
-const { Resend } = require('resend');
-const resend = new Resend(process.env.RESEND_API_KEY);
+const nodemailer = require('nodemailer');
 const cors = require('cors');
 const path = require('path');
 
@@ -55,27 +54,34 @@ const chatHistorySchema = new mongoose.Schema({
 const ChatHistory = mongoose.model('ChatHistory', chatHistorySchema);
 
 // ============================================
-// EMAIL SETUP
+// EMAIL SETUP - Gmail SMTP
 // ============================================
-
+const transporter = nodemailer.createTransport({
+  service: 'gmail',
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
 
 function generateOTP() {
   return Math.floor(100000 + Math.random() * 900000).toString();
 }
 
 async function sendOTPEmail(email, name, otp) {
-  await resend.emails.send({
-    from: 'onboarding@resend.dev',
+  await transporter.sendMail({
+    from: process.env.EMAIL_USER,
     to: email,
     subject: '🔐 Your RandomChat OTP Code',
     html: `
       <div style="font-family:Arial,sans-serif;max-width:420px;margin:auto;padding:30px;background:#13131a;color:#f0eeff;border-radius:16px;">
         <h2 style="color:#7c6fff;">Hello ${name}! 👋</h2>
-        <p style="color:#8882aa;">Your OTP code:</p>
+        <p style="color:#8882aa;">Your OTP verification code is:</p>
         <div style="font-size:2.5rem;font-weight:bold;letter-spacing:12px;color:#7c6fff;text-align:center;padding:20px;background:#1c1c28;border-radius:12px;margin:20px 0;">
           ${otp}
         </div>
-        <p style="color:#8882aa;">Valid for 10 minutes only.</p>
+        <p style="color:#8882aa;">Valid for <strong style="color:#f0eeff;">10 minutes</strong> only.</p>
+        <p style="color:#8882aa;font-size:0.85rem;">If you didn't register on RandomChat, ignore this.</p>
       </div>
     `
   });
@@ -85,31 +91,18 @@ async function sendOTPEmail(email, name, otp) {
 // ROUTES
 // ============================================
 
-// REGISTER - Send OTP
 app.post('/api/register', async (req, res) => {
   try {
     const { name, email, password, age, gender, interests } = req.body;
-
     const existing = await User.findOne({ email, isVerified: true });
     if (existing) return res.status(400).json({ msg: 'Email already registered!' });
-
-    // Delete old unverified account
     await User.deleteOne({ email, isVerified: false });
-
     const hashedPass = await bcrypt.hash(password, 10);
     const otp = generateOTP();
     const otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
-
-    const user = new User({
-      name, email, age, gender, interests,
-      password: hashedPass,
-      isVerified: false,
-      otp, otpExpiry
-    });
+    const user = new User({ name, email, age, gender, interests, password: hashedPass, isVerified: false, otp, otpExpiry });
     await user.save();
-
     await sendOTPEmail(email, name, otp);
-
     res.json({ msg: 'OTP sent to your email!', email });
   } catch (err) {
     console.error(err);
@@ -117,7 +110,6 @@ app.post('/api/register', async (req, res) => {
   }
 });
 
-// VERIFY OTP
 app.post('/api/verify-otp', async (req, res) => {
   try {
     const { email, otp } = req.body;
@@ -125,30 +117,25 @@ app.post('/api/verify-otp', async (req, res) => {
     if (!user) return res.status(400).json({ msg: 'User not found!' });
     if (user.otp !== otp) return res.status(400).json({ msg: '❌ Wrong OTP! Try again.' });
     if (new Date() > user.otpExpiry) return res.status(400).json({ msg: '⏰ OTP expired! Register again.' });
-
     user.isVerified = true;
     user.otp = undefined;
     user.otpExpiry = undefined;
     await user.save();
-
     res.json({ msg: '✅ Email verified! You can now login.' });
   } catch (err) {
     res.status(500).json({ msg: 'Server error' });
   }
 });
 
-// RESEND OTP
 app.post('/api/resend-otp', async (req, res) => {
   try {
     const { email } = req.body;
     const user = await User.findOne({ email, isVerified: false });
     if (!user) return res.status(400).json({ msg: 'User not found!' });
-
     const otp = generateOTP();
     user.otp = otp;
     user.otpExpiry = new Date(Date.now() + 10 * 60 * 1000);
     await user.save();
-
     await sendOTPEmail(email, user.name, otp);
     res.json({ msg: 'New OTP sent!' });
   } catch (err) {
@@ -156,17 +143,14 @@ app.post('/api/resend-otp', async (req, res) => {
   }
 });
 
-// LOGIN
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ msg: 'User not found!' });
     if (!user.isVerified) return res.status(400).json({ msg: 'Please verify your email with OTP first!', needsVerification: true, email });
-
     const match = await bcrypt.compare(password, user.password);
     if (!match) return res.status(400).json({ msg: 'Wrong password!' });
-
     const token = jwt.sign({ id: user._id }, process.env.JWT_SECRET || 'secret123', { expiresIn: '7d' });
     res.json({ token, user: { id: user._id, name: user.name, gender: user.gender, interests: user.interests } });
   } catch (err) {
@@ -174,7 +158,6 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// CHAT HISTORY
 app.get('/api/history/:userId', async (req, res) => {
   try {
     const histories = await ChatHistory.find({
@@ -216,16 +199,8 @@ let activeRooms = {}, connectedUsers = {};
 
 io.on('connection', (socket) => {
   console.log('🔌 Connected:', socket.id);
-
-  socket.on('user-join', (userData) => {
-    connectedUsers[socket.id] = { ...userData, socketId: socket.id };
-  });
-
-  socket.on('find-random', (userData) => {
-    connectedUsers[socket.id] = { ...userData, socketId: socket.id };
-    matchUser(socket, userData);
-  });
-
+  socket.on('user-join', (userData) => { connectedUsers[socket.id] = { ...userData, socketId: socket.id }; });
+  socket.on('find-random', (userData) => { connectedUsers[socket.id] = { ...userData, socketId: socket.id }; matchUser(socket, userData); });
   socket.on('offer', ({ offer, roomId }) => socket.to(roomId).emit('offer', { offer }));
   socket.on('answer', ({ answer, roomId }) => socket.to(roomId).emit('answer', { answer }));
   socket.on('ice-candidate', ({ candidate, roomId }) => socket.to(roomId).emit('ice-candidate', { candidate }));
@@ -245,18 +220,12 @@ io.on('connection', (socket) => {
   });
 
   socket.on('next-user', (userData) => { leaveCurrentRoom(socket); matchUser(socket, userData); });
-
-  socket.on('disconnect', () => {
-    leaveCurrentRoom(socket);
-    removeFromQueues(socket.id);
-    delete connectedUsers[socket.id];
-  });
+  socket.on('disconnect', () => { leaveCurrentRoom(socket); removeFromQueues(socket.id); delete connectedUsers[socket.id]; });
 });
 
 function matchUser(socket, userData) {
   const { gender } = userData;
   let partner = null;
-
   if (gender === 'male') {
     if (Math.random() < 0.7 && waitingFemale.length > 0) partner = waitingFemale.shift();
     else partner = waitingFemale.shift() || waitingOther.shift() || waitingMale.shift();
@@ -265,7 +234,6 @@ function matchUser(socket, userData) {
   } else {
     partner = waitingMale.shift() || waitingFemale.shift() || waitingOther.shift();
   }
-
   if (partner) {
     const roomId = 'room_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
     activeRooms[roomId] = { socket1: partner.socketId, socket2: socket.id, user1Id: partner.userId, user2Id: userData.userId };
